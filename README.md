@@ -1,126 +1,109 @@
-# GHL-Script-
+# 🎯 FastAPI Redirect Service
 
+> Resolve a U S. ZIP code, map it to the visitor’s state, look up active partner
+> “funnel” links in a Google Sheet, and return one of those links using
+> **round-robin** load balancing.  
+> If no partner is available, users are redirected to a default fallback page.
 
-FastAPI Redirect Service – Comprehensive Documentation
-(plain-text, ready to paste into MS Word or any editor)
+---
 
-1. Purpose
-This micro-service accepts a U S. ZIP code, determines the visitor’s state, looks up partner “funnel” URLs stored in a Google Sheet, and returns one of those URLs using a round-robin load-balancing strategy. If the ZIP code or state cannot be resolved, or no active partner exists, the service falls back to a default landing page.
+## Table of Contents
 
-2. High-Level Architecture
-bash
-Copy
-Edit
-Browser / Client ──► /redirect/{zip_code} ─┬─► uszipcode lookup
-                                            │
-                                            ├─► Google Sheet (CSV export)
-                                            │
-                                            └─► Round-robin selector
-                                                        │
-                                              JSON { "redirect_url": ... }
-3. Technology Stack
+1. [Features](#features)  
+2. [Quick Start](#quick-start)  
+3. [Project Structure](#project-structure)  
+4. [Configuration](#configuration)  
+5. [API Reference](#api-reference)  
+6. [Deployment Guides](#deployment-guides)  
+7. [Scaling Notes](#scaling-notes)  
+8. [Troubleshooting](#troubleshooting)  
+9. [Roadmap](#roadmap)  
+10. [License](#license)
 
-Layer / Concern	Library / Service	Notes
-Web framework	FastAPI	Async, automatic OpenAPI docs
-CORS handling	fastapi.middleware.cors	Allows requests from any origin
-HTTP client	requests	Fetches CSV export of the Google Sheet
-Data wrangling	pandas	Reads & cleans the CSV in-memory
-ZIP → State lookup	uszipcode	Local offline search engine
-State tracking	In-process dict	Round-robin counters per state
-4. Source Walk-Through
-4.1 CORS Setup
-python
-Copy
-Edit
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-Allows any front-end (SPA, landing page, etc.) to call the service without pre-flight errors.
+---
 
-4.2 Google Sheet Access
-SHEET_CSV_URL is the CSV download link for the “By State” tab (each state appears as a column header).
+## Features
 
-fetch_google_sheet() pulls the sheet on every request to ensure real-time accuracy, then:
+|                           | Description                                   |
+|---------------------------|-----------------------------------------------|
+| **FastAPI** backend       | Automatic OpenAPI docs & async-ready          |
+| Google Sheet integration  | Reads live data from the “By State” tab       |
+| ZIP → State resolution    | Offline lookup via `uszipcode`                |
+| Round-robin load balance  | Even traffic distribution per state           |
+| CORS enabled              | Can be called directly from any landing page  |
+| Drop-in default fallback  | Always serves a valid URL, even on failure    |
 
-Reads the raw CSV into a DataFrame.
+---
 
-Replaces NaN, inf, and -inf with empty strings so boolean tests remain predictable.
+## Quick Start
 
-4.3 ZIP → State Resolution
-python
-Copy
-Edit
-search = SearchEngine(simple_zipcode=True)
-zipcode_data = search.by_zipcode(zip_code)
-state = zipcode_data.state  # returns "CA", "TX", etc.
-If the ZIP is unknown or the library returns None, the request is routed to the default URL.
+```bash
+# 1 · Clone & enter
+git clone https://github.com/your-org/redirect-service.git
+cd redirect-service
 
-4.4 State Abbreviation Map
-A constant dict translates two-letter abbreviations to full names that exactly match the Google Sheet column headers. If a new state is added to the sheet, also add it here.
-
-4.5 Filtering Valid Companies
-python
-Copy
-Edit
-valid_companies = df[(df[state_full] == True) & (df["On/Off"] == True)]
-At least two sheet columns are mandatory:
-
-One column per state – must contain boolean TRUE (uppercase, without quotes) for each active company.
-
-On/Off – global kill-switch per company row.
-
-If the filter returns zero rows the user again receives the default landing page.
-
-4.6 Round-Robin Selection
-round_robin_state_tracker is an in-memory dictionary:
-{"California": 5, "Texas": 2, ...}
-
-Per incoming request:
-
-Initialize the counter for the state if it does not exist.
-
-Pick the company index counter % len(company_list).
-
-Increment the counter (mod length) for next time.
-
-Note: In multi-process deployments the tracker lives only inside one worker. For gunicorn/Docker/Kubernetes you need a shared store (Redis, database) to keep round-robin global. See § 8 Scalability.
-
-5. API Specification
-
-Method	Path	Description	Parameter	Response (HTTP 200)
-GET	/redirect/{zip_code}	Returns best funnel URL for ZIP	zip_code – US 5-digit string	{"redirect_url": "https://..."}
-All failure modes (unknown ZIP, unknown state, no partners) still return HTTP 200 with the default URL.
-
-Example
-bash
-Copy
-Edit
-curl https://your-domain.com/redirect/94105
-{"redirect_url":"https://partner-site.com/ca-offer"}
-6. Environment & Installation
-bash
-Copy
-Edit
-# 1. Create environment
+# 2 · Create virtual environment
 python -m venv venv
-source venv/bin/activate
+source venv/bin/activate  # Windows: venv\Scripts\activate
 
-# 2. Install dependencies
-pip install fastapi uvicorn pandas requests uszipcode python-multipart
+# 3 · Install dependencies
+pip install -r requirements.txt
 
-# 3. Download uszipcode DB (first run triggers it automatically)
+# 4 · Run database download for uszipcode (first run only)
 python -c "from uszipcode import SearchEngine; SearchEngine().update()"
-Tip: Pin exact versions in requirements.txt for deterministic builds.
 
-7. Running Locally
-bash
-Copy
-Edit
-uvicorn app:app --reload  # auto-reload for development
-Open your browser at http://127.0.0.1:8000/redirect/10001.
-Interactive docs live at http://127.0.0.1:8000/docs.
+# 5 · Launch development server
+uvicorn app:app --reload
+```
+
+Visit **`http://127.0.0.1:8000/docs`** for interactive Swagger UI.
+
+---
+
+## Project Structure
+
+```
+.
+├── app.py              # FastAPI application
+├── requirements.txt    # Locked dependencies
+└── README.md
+```
+
+---
+
+## Configuration
+
+| Variable                  | Default value | Purpose                                                |
+|---------------------------|---------------|--------------------------------------------------------|
+| `SHEET_CSV_URL`           | Hard-coded    | CSV export link of the Google Sheet (“By State” tab)   |
+| `DEFAULT_REDIRECT_URL`    | `https://retirementroadmaphub.com/one-page-5441` | Fallback URL |
+
+> To change any of these, simply edit the top of **`app.py`** or move them to
+> environment variables/config files as needed.
+
+---
+
+## API Reference
+
+### `GET /redirect/{zip_code}`
+
+| Parameter | Type   | Example | Description                          |
+|-----------|--------|---------|--------------------------------------|
+| `zip_code`| string | `90210` | U S. 5-digit ZIP (path parameter)    |
+
+#### Successful Response `200 OK`
+
+```json
+{
+  "redirect_url": "https://partner-site.com/ca-offer"
+}
+```
+
+*All error conditions (unknown ZIP, unknown state, no active partner) still
+return `200` with the **default** URL, ensuring your front-end always receives
+a usable link.*
+
+--
+
+
 
